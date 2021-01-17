@@ -1,0 +1,1215 @@
+---
+title: "Retail Dashboard"
+output: html_notebook
+---
+
+
+```{r}
+# importing libraries
+
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+theme_set(theme_bw())
+library(stringr)
+library(lubridate)
+library(reshape2)
+library(viridis)
+library(leaflet)
+library(flexclust)
+library(leaflet.extras)
+library(scales)
+
+library(pracma)
+
+library(shiny)
+library(shinydashboard)
+```
+
+
+
+```{r}
+# loading all the data omitting data about sellers, payments, and reviews
+
+orders_items <- read.csv('olist_order_items_dataset.csv')
+orders_cus <- read.csv('olist_orders_dataset.csv')
+cus <- read.csv('olist_customers_dataset.csv')
+geo <- read.csv('olist_geolocation_dataset.csv')
+products <- read.csv('olist_products_dataset.csv')
+product_trans <- read.csv('product_category_name_translation.csv')
+
+```
+
+
+
+```{r}
+# data preparation: replacing original product_category_name by english names
+
+product_trans <- product_trans %>% 
+  dplyr::rename(product_category_name = п.їproduct_category_name)
+
+products_new <- left_join(products, product_trans, by = "product_category_name")
+
+products_new <- products_new %>%
+  select(-product_category_name) %>%
+  dplyr::rename(product_category_name = product_category_name_english)
+
+```
+
+
+```{r}
+# data preparation: combining all order data in one dataframe
+
+order_dic <- merge(orders_cus, cus, by.x='customer_id', by.y='customer_id')
+order_df2 <- merge(orders_items, products_new, by.x='product_id', by.y='product_id')
+
+order_df2$customer_id = order_dic[match(order_df2$order_id, order_dic$order_id), "customer_id"] 
+order_df2$order_status = order_dic[match(order_df2$order_id, order_dic$order_id), "order_status"] 
+order_df2$order_purchase_timestamp = order_dic[match(order_df2$order_id, order_dic$order_id), "order_purchase_timestamp"] 
+order_df2$order_approved_at = order_dic[match(order_df2$order_id, order_dic$order_id), "order_approved_at"]
+
+order_df2$order_delivered_carrier_date = order_dic[match(order_df2$order_id, order_dic$order_id), "order_delivered_carrier_date"] 
+
+order_df2$order_delivered_customer_date = order_dic[match(order_df2$order_id, order_dic$order_id), "order_delivered_customer_date"] 
+
+order_df2$order_estimated_delivery_date = order_dic[match(order_df2$order_id, order_dic$order_id), "order_estimated_delivery_date"] 
+
+order_df2$customer_unique_id = order_dic[match(order_df2$order_id, order_dic$order_id), "customer_unique_id"] 
+order_df2$customer_zip_code_prefix = order_dic[match(order_df2$order_id, order_dic$order_id), "customer_zip_code_prefix"]
+order_df2$customer_city = order_dic[match(order_df2$order_id, order_dic$order_id), "customer_city"] 
+order_df2$customer_state = order_dic[match(order_df2$order_id, order_dic$order_id), "customer_state"] 
+
+order_df <- order_df2
+
+
+order_df <- order_df %>%
+  transmute(!!! rlang::syms(setdiff(names(.), c('product_length_cm', 'product_height_cm', 'product_width_cm'))), product_volume_cm = product_length_cm*product_height_cm*product_width_cm) %>%
+  select(-seller_id, -order_approved_at, -order_delivered_carrier_date, -shipping_limit_date, -product_name_lenght)
+
+```
+
+
+
+```{r}
+# data preparation: collecting geo data
+
+geo_sorted <- subset(geo, geolocation_zip_code_prefix %in% order_df$customer_zip_code_prefix)
+geo_sorted <- geo_sorted[!duplicated(geo_sorted$geolocation_zip_code_prefix), ]
+order_df <- merge(order_df, geo_sorted, by.x='customer_zip_code_prefix', by.y='geolocation_zip_code_prefix')
+```
+
+
+```{r}
+# data preparation: time series formatting
+order_df <- order_df %>% 
+  separate(order_purchase_timestamp, c("purchase_date", "purchase_time"), sep = " (?=[^ ]+$)") %>%
+  mutate(purchase_date = as.Date(purchase_date, format = "%Y-%m-%d"))
+```
+
+
+
+```{r}
+# data preparation: subgrouping of product categories
+order_df$product_category_name <- revalue(order_df$product_category_name, c('fashion_bags_accessories'='clothing'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('fashion_shoes'='clothing'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('fashion_male_clothing'='clothing'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('fashion_sport'='clothing'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('fashio_female_clothing'='clothing'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('fashion_underwear_beach'='clothing'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('luggage_accessories'='clothing'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('computers_accessories'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('consoles_games'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('electronics'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('signaling_and_security'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('computers'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('security_and_services'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('telephony'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('tablets_printing_image'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('fixed_telephony'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('audio'='consumer_electronics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('health_beauty'='cosmetics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('perfumery'='cosmetics'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('baby'='children'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('toys'='children'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('diapers_and_hygiene'='children'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('fashion_childrens_clothes'='children'))  
+order_df$product_category_name <- revalue(order_df$product_category_name, c('stationery'='children'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('furniture_decor'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('kitchen_dining_laundry_garden_furniture'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('office_furniture'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('furniture_mattress_and_upholstery'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('furniture_living_room'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('furniture_bedroom'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('la_cuisine'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('home_confort'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('home_comfort_2'='furniture'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('bed_bath_table'='home_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('housewares'='home_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('garden_tools'='home_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('small_appliances'='home_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('home_appliances'='home_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('small_appliances_home_oven_and_coffee'='home_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('home_appliances_2'='home_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('auto'='large_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('air_conditioning'='large_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('agro_industry_and_commerce'='large_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('industry_commerce_and_business'='large_appliances'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('sports_leisure'='hobby'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('musical_instruments'='hobby'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('art'='hobby'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('cine_photo'='hobby'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('music'='hobby'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('arts_and_craftmanship'='hobby'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('cds_dvds_musicals'='hobby'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('dvds_blu_ray'='hobby'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('books_technical'='book'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('books_general_interest'='book'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('books_imported'='book'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('food_drink'='food_drink'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('market_place'='food_drink'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('food'='food_drink'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('drinks'='food_drink'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('watches_gifts'='greetings'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('christmas_supplies'='greetings'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('flowers'='greetings'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('party_supplies'='greetings'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('pet_shop'='greetings'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('cool_stuff'='greetings'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('construction_tools_construction'='construction'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('costruction_tools_garden'='construction'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('home_construction'='construction'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('construction_tools_lights'='construction'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('costruction_tools_tools'='construction'))
+order_df$product_category_name <- revalue(order_df$product_category_name, c('construction_tools_safety'='construction'))
+  
+```
+
+
+
+
+```{r}
+# plot frequencies of purchases (excluding cancelledand unavailoble orders)
+
+ord_filt <- order_df %>%
+  filter(order_status != 'canceled' | order_status != 'unavailable')
+  
+ord_freq <- ord_filt %>%
+  group_by(purchase_date) %>%
+  dplyr::summarise(counts = n())
+
+ord_rev <- ord_filt %>%
+  group_by(purchase_date) %>%
+  dplyr::summarise(sum_rev = sum(price))
+
+viz_freq <- ggplot(data=ord_freq, aes(x=purchase_date, y=counts)) + 
+  geom_line()+
+  geom_point()+
+  scale_color_viridis(discrete = TRUE, begin = 1, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 1, option = "magma") +
+  ggtitle("Frequency of Purchases Daily for the Period") +
+  xlab("Time") + ylab("Number of Purchases")
+viz_freq
+
+
+```
+
+
+
+```{r}
+# plot daily revenue (excluding cancelledand unavailoble orders)
+
+viz_rev <- ggplot(data=ord_rev, aes(x=purchase_date, y=sum_rev, group=1)) + 
+  geom_line()+
+  geom_point()+ 
+  scale_color_viridis(discrete = TRUE, begin = 1, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 1, option = "magma") +
+  ggtitle("Revenue Daily for the Period") +
+  xlab("Time") + ylab("Daily Revenue")
+viz_rev
+```
+
+
+
+```{r}
+# found a big outlier. Black Friday!
+
+outlier <- ord_freq %>%
+  filter(counts > 900)
+outlier
+```
+
+
+Since frequencies and revenues are highly correlated, we will proceed further with revenue data 
+
+```{r}
+# monthly revenue data
+
+order_2016 <- ord_filt %>%
+  filter(purchase_date <= as.Date("2016-12-31")) %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+order_2016$month <- format(as.Date(order_2016$month, "%Y-%m-%d"), format="%m")
+order_2016$year <- "2016"
+
+order_2017 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2017-01-01") & purchase_date <= as.Date("2017-12-31")) %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price))
+order_2017$month <- format(as.Date(order_2017$month, "%Y-%m-%d"), format="%m")  
+order_2017$year <- "2017"
+
+order_2018 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2018-01-01") & purchase_date <= as.Date("2018-12-31")) %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+order_2018$month <- format(as.Date(order_2018$month, "%Y-%m-%d"), format="%m")
+order_2018$year <- "2018"
+
+combined <- rbind(order_2016, order_2017, order_2018)
+combined <- group_by(combined, month)
+
+rev_viz <- ggplot(combined, aes(x=month, y=sum_rev, col=year, group = year)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_color_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma") +
+  ggtitle("Revenue Monthly by Years") +
+  xlab("Month") + ylab("Monthly Revenue")
+
+rev_viz
+```
+
+
+```{r}
+# monthly revenue data (excluded 2016 year and september from 2018 year)
+
+order_2016 <- ord_filt %>%
+  filter(purchase_date <= as.Date("2016-12-31")) %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+order_2016$month <- format(as.Date(order_2016$month, "%Y-%m-%d"), format="%m")
+order_2016$year <- "2016"
+
+order_2017 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2017-01-01") & purchase_date <= as.Date("2017-12-31")) %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price))
+order_2017$month <- format(as.Date(order_2017$month, "%Y-%m-%d"), format="%m")  
+order_2017$year <- "2017"
+
+order_2018 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2018-01-01") & purchase_date <= as.Date("2018-08-31")) %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+order_2018$month <- format(as.Date(order_2018$month, "%Y-%m-%d"), format="%m")
+order_2018$year <- "2018"
+
+combined <- rbind(order_2017, order_2018)
+combined <- group_by(combined, month)
+
+rev_viz <- ggplot(combined, aes(x=month, y=sum_rev, col=year, group = year)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_color_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma") +
+  ggtitle("Revenue Monthly by Years") +
+  xlab("Month") + ylab("Monthly Revenue")
+
+rev_viz
+```
+
+
+
+```{r}
+# Top regions by revenue
+
+sort_states <- ord_filt %>%
+  group_by(customer_state) %>%
+  summarize(sum_rev = sum(price))%>%
+  arrange(desc(sum_rev))
+
+top_states <- sort_states[1:15,]
+top_states
+
+top_states_pie <- ggplot(top_states, aes(x="", y=customer_state, fill=customer_state, order = as.numeric(sum_rev)))+
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  scale_color_viridis(discrete = TRUE, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, option = "magma") +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text())+
+  ggtitle("Top 15 States by Revenue") +
+  xlab("") + ylab("")
+top_states_pie
+
+
+```
+
+
+```{r}
+# Top cities by revenue
+
+sort_cities <- ord_filt %>%
+  group_by(customer_city) %>%
+  summarize(sum_rev = sum(price))%>%
+  arrange(desc(sum_rev))
+
+top_cities <- sort_cities[1:15,]
+top_cities
+
+top_cities_pie <- ggplot(top_cities, aes(x="", y=customer_city, fill=customer_city, order = as.numeric(sum_rev)))+
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  scale_color_viridis(discrete = TRUE, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, option = "magma") +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text())+
+  ggtitle("Top 15 Cities by Revenue") +
+  xlab("") + ylab("")
+top_cities_pie
+
+```
+
+
+```{r}
+# Boxplot of customers from most profitable regions
+top_cus_sorted <- ord_filt %>%
+  subset(customer_state %in% top_states$customer_state) %>%
+  select(customer_id,price,customer_state, purchase_date) %>%
+  group_by(customer_id, customer_state, purchase_date) %>%
+  summarize(sum_rev = sum(price)) %>%
+  arrange(desc(sum_rev))
+top_cus_sorted
+
+
+top_cus_viz <- ggplot(top_cus_sorted, aes(x=customer_state, y=sum_rev, col=customer_state, order = as.numeric(sum_rev))) + 
+  geom_boxplot()+
+  scale_y_continuous(trans='log2') +
+  geom_point() + 
+  scale_color_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma") +
+  ggtitle("Revenue by Customers from Hight-Profitable Regions") +
+  xlab("Customer State") + ylab("Revenue")
+
+top_cus_viz
+
+```
+
+
+```{r}
+
+top_50_cus <- top_cus_sorted[1:100,]
+top_50_cus
+
+top_50_viz <- ggplot(top_50_cus, aes(x=purchase_date, y=sum_rev, col=customer_state, group = customer_state, order = as.numeric(sum_rev))) + 
+  geom_point() + 
+  scale_color_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma") +
+  ggtitle("Revenue by Top-100 Customers") +
+  xlab("Time") + ylab("Revenue")
+
+top_50_viz
+
+```
+
+
+
+```{r}
+# Find and plot top-5 product categories (after data cleaning)
+# Plot can be a pie chart (you can copy my code for the pie chart with your data)
+sort_categories <- order_df %>%
+  group_by(product_category_name) %>%
+  summarize(sum_rev = sum(price))%>%
+  arrange(desc(sum_rev))
+top_categories <- sort_categories[1:10,]
+top_categories
+top_categories_pie <- ggplot(top_categories, aes(x="", y=product_category_name, fill=product_category_name, order = as.numeric(sum_rev)))+
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  scale_color_viridis(discrete = TRUE, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, option = "magma") +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text())+
+  ggtitle("Top 10 Product Categories by Revenue") +
+  xlab("") + ylab("")
+top_categories_pie
+
+
+
+
+```
+
+
+```{r}
+# Plot a couple of product categories purchases 
+
+greetings_2016 <- ord_filt %>%
+  filter(purchase_date <= as.Date("2016-12-31")) %>%
+  filter(product_category_name == "greetings") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+greetings_2016$month <- format(as.Date(greetings_2016$month, "%Y-%m-%d"), format="%m")
+greetings_2016$year <- "2016"
+greetings_2017 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2017-01-01") & purchase_date <= as.Date("2017-12-31")) %>%
+  filter(product_category_name == "greetings") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price))
+greetings_2017$month <- format(as.Date(greetings_2017$month, "%Y-%m-%d"), format="%m")  
+greetings_2017$year <- "2017"
+greetings_2018 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2018-01-01") & purchase_date <= as.Date("2018-08-31")) %>%
+  filter(product_category_name == "greetings") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+greetings_2018$month <- format(as.Date(greetings_2018$month, "%Y-%m-%d"), format="%m")
+greetings_2018$year <- "2018"
+combined <- rbind(greetings_2017, greetings_2018)
+combined <- group_by(combined, month)
+rev_viz <- ggplot(combined, aes(x=month, y=sum_rev, col=year, group = year)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_color_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma") +
+  ggtitle("Monthly Revenue for 'greetings' Category") +
+  xlab("Month") + ylab("Monthly Revenue")
+rev_viz
+
+
+```
+
+
+
+```{r}
+large_appliances_2016 <- ord_filt %>%
+  filter(purchase_date <= as.Date("2016-12-31")) %>%
+  filter(product_category_name == "large_appliances") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+large_appliances_2016$month <- format(as.Date(large_appliances_2016$month, "%Y-%m-%d"), format="%m")
+large_appliances_2016$year <- "2016"
+large_appliances_2017 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2017-01-01") & purchase_date <= as.Date("2017-12-31")) %>%
+  filter(product_category_name == "large_appliances") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price))
+large_appliances_2017$month <- format(as.Date(large_appliances_2017$month, "%Y-%m-%d"), format="%m")  
+large_appliances_2017$year <- "2017"
+large_appliances_2018 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2018-01-01") & purchase_date <= as.Date("2018-08-31")) %>%
+  filter(product_category_name == "large_appliances") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+large_appliances_2018$month <- format(as.Date(large_appliances_2018$month, "%Y-%m-%d"), format="%m")
+large_appliances_2018$year <- "2018"
+combined <- rbind(large_appliances_2017, large_appliances_2018)
+combined <- group_by(combined, month)
+rev_viz <- ggplot(combined, aes(x=month, y=sum_rev, col=year, group = year)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_color_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma") +
+  ggtitle("Monthly Revenue for large_appliances Category") +
+  xlab("Month") + ylab("Monthly Revenue")
+rev_viz
+```
+
+
+
+
+```{r}
+clothing_2016 <- ord_filt %>%
+  filter(purchase_date <= as.Date("2016-12-31")) %>%
+  filter(product_category_name == "clothing") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+clothing_2016 <- ord_filt %>%
+  filter(purchase_date <= as.Date("2016-12-31")) %>%
+  filter(product_category_name == "clothing") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+clothing_2016$month <- format(as.Date(clothing_2016$month, "%Y-%m-%d"), format="%m")
+clothing_2016$year <- "2016"
+clothing_2017 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2017-01-01") & purchase_date <= as.Date("2017-12-31")) %>%
+  filter(product_category_name == "clothing") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price))
+clothing_2017$month <- format(as.Date(clothing_2017$month, "%Y-%m-%d"), format="%m")  
+clothing_2017$year <- "2017"
+clothing_2018 <- ord_filt %>%
+  filter(purchase_date >= as.Date("2018-01-01") & purchase_date <= as.Date("2018-08-31")) %>%
+  filter(product_category_name == "clothing") %>%
+  group_by(month=floor_date(purchase_date, "month")) %>%
+  summarize(sum_rev = sum(price)) 
+clothing_2018$month <- format(as.Date(clothing_2018$month, "%Y-%m-%d"), format="%m")
+clothing_2018$year <- "2018"
+combined <- rbind(clothing_2017, clothing_2018)
+combined <- group_by(combined, month)
+rev_viz <- ggplot(combined, aes(x=month, y=sum_rev, col=year, group = year)) + 
+  geom_point() + 
+  geom_line() + 
+  scale_color_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, begin = 0, end = 0.7, option = "magma") +
+  ggtitle("Monthly Revenue for 'clothing' Category") +
+  xlab("Month") + ylab("Monthly Revenue")
+rev_viz
+```
+
+
+
+```{r}
+# Favorite product categories per region
+map_data <- ord_filt %>%
+  subset(customer_state %in% top_states$customer_state) %>%
+  group_by(customer_state, product_category_name) %>%
+  summarize(sum_rev = sum(price))%>%
+  arrange(desc(sum_rev))
+heat_categories <- ggplot(map_data,aes(x=product_category_name,y=customer_state, fill=sum_rev))+
+  geom_tile()+
+  scale_y_discrete(expand=c(0,0))+
+  scale_x_discrete(expand=c(0,0), breaks=c("large_appliances","home_appliances","hobby","greetings","furniture","cosmetics","consumer_electronics","construction","clothing","children","food_drink","book"))+
+  scale_fill_viridis(discrete = FALSE, begin = 0.1, end = 1, option = "magma", name = "Revenue") +
+  ggtitle("Product Categories by Revenue per State") +
+  xlab("Product Category") + ylab("Customer State") + coord_flip()
+  
+heat_categories
+
+
+
+```
+
+
+
+```{r}
+# Find late deliveries
+
+order_delvr <- order_df %>%
+  filter(order_status == 'delivered')
+order_delvr
+order_delvr$order_estimated_delivery_date = as.Date(order_delvr$order_estimated_delivery_date, format = "%Y-%m-%d %H:%M:%S") 
+order_delvr$order_estimated_delivery_date = as.Date(format(order_delvr$order_estimated_delivery_date, "%Y-%m-%d"))
+order_delvr$order_delivered_customer_date = as.Date(order_delvr$order_delivered_customer_date, format = "%Y-%m-%d %H:%M:%S") 
+order_delvr$order_delivered_customer_date = as.Date(format(order_delvr$order_delivered_customer_date, "%Y-%m-%d"))
+late_delvr <- order_delvr %>%
+  filter(order_delivered_customer_date > order_estimated_delivery_date)
+late_delvr
+sort_late_cities <- late_delvr %>%
+  group_by(customer_city) %>%
+  dplyr::summarize(count_late = n())%>%
+  arrange(desc(count_late))
+top_late_cities <- sort_late_cities[1:15,]
+top_late_cities
+late_delvr_pie <- ggplot(top_late_cities, aes(x="", y=customer_city, fill=customer_city, order = as.numeric(count_late)))+
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  scale_color_viridis(discrete = TRUE, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, option = "magma") +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text())+
+  ggtitle("Top 15 Cities by Late Deliveries") +
+  xlab("") + ylab("")
+late_delvr_pie
+
+```
+
+
+
+```{r}
+# Top States by Number of Orders
+
+sort_order_states <- ord_filt %>%
+  group_by(customer_state) %>%
+  dplyr::summarize(count_order_states = n())%>%
+  arrange(desc(count_order_states))
+top_order_states <- sort_order_states[1:15,]
+top_order_states
+top_order_states_pie <- ggplot(top_order_states, aes(x="", y=customer_state, fill=customer_state, order = as.numeric(count_order_states)))+
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  scale_color_viridis(discrete = TRUE, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, option = "magma") +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text())+
+  ggtitle("Top 15 States by Number of Orders") +
+  xlab("") + ylab("")
+top_order_states_pie
+```
+
+```{r}
+# Top Cities by Number of Orders
+sort_order_cities <- ord_filt %>%
+  group_by(customer_city) %>%
+  dplyr::summarize(count_order_cities = n())%>%
+  arrange(desc(count_order_cities))
+top_order_cities <- sort_order_cities[1:15,]
+top_order_cities
+top_order_cities_pie <- ggplot(top_order_cities, aes(x="", y=customer_city, fill=customer_city, order = as.numeric(count_order_cities)))+
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start=0) +
+  scale_color_viridis(discrete = TRUE, option = "magma")+
+  scale_fill_viridis(discrete = TRUE, option = "magma") +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+    theme(axis.line = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          plot.title = element_text())+
+  ggtitle("Top 15 Cities by Number of Orders") +
+  xlab("") + ylab("")
+top_order_cities_pie
+```
+
+
+
+```{r}
+# Most profitable customers per revenue (find 25% of most profitable customers)
+profitable <- ord_filt %>% 
+  select(customer_id,price,customer_state) %>%
+  group_by(customer_id,customer_state) %>%
+  summarize(sum_cus = sum(price)) %>%
+  arrange(desc(sum_cus))
+profitable
+print(profitable)
+
+```
+
+
+
+
+```{r}
+# preparing geo data
+geo_data <- ord_filt %>%
+  group_by(geolocation_lat, geolocation_lng) %>%
+  summarize(sum_rev = sum(price))%>%
+  arrange(desc(sum_rev))
+geo_data  
+  
+```
+
+
+
+
+```{r}
+# Plot all the customers on the map
+
+map_plot <- geo_data %>% 
+  leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addHeatmap(lng=~as.numeric(geolocation_lng),
+             lat=~as.numeric(geolocation_lat),
+             radius = 8)
+map_plot
+```
+
+
+
+
+```{r}
+# plot only 25% profitable customers (forth quantile) on the map
+quantile(geo_data$sum_rev)
+forth_quant <- subset(geo_data, sum_rev >= 1128.31)
+top_forth_cus <- top_cus_sorted[1:24598,]
+top_forth_cus
+
+geo_data_top <- ord_filt %>%
+  subset(customer_id %in% top_forth_cus$customer_id) %>%
+  group_by(geolocation_lat, geolocation_lng) %>%
+  summarize(sum_rev = sum(price))%>%
+  arrange(desc(sum_rev))
+geo_data_top
+
+map_plot_top <- geo_data_top %>% 
+  leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addHeatmap(lng=~as.numeric(geolocation_lng),
+             lat=~as.numeric(geolocation_lat),
+             radius = 8)
+map_plot_top
+```
+
+
+```{r}
+geo_data_top_2 <- ord_filt %>%
+  subset(customer_id %in% top_forth_cus$customer_id) %>%
+  group_by(geolocation_lat, geolocation_lng) %>%
+  summarize(sum_rev = sum(price))%>%
+  arrange(desc(sum_rev))
+
+```
+
+
+
+```{r}
+# 25% of customers bring 60% of revenue s
+sum_top_forth_cus <- sum(geo_data_top$sum_rev)
+sum_top_forth_cus
+sum_all_cus <- sum(geo_data$sum_rev)
+sum_all_cus
+
+top_profit_25 <- sum_top_forth_cus/sum_all_cus
+top_profit_25
+```
+
+
+```{r}
+# remove geo outliers (Portugal)
+geo_data_top_cleaned <- geo_data_top %>%
+  select(-sum_rev)
+
+geo_data_cl <- geo_data[order(-geo_data$geolocation_lng),]
+geo_data_cl <- geo_data_cl[-(1:3), , drop = FALSE]
+geo_data_cleaned <- select(geo_data_cl,-sum_rev)
+```
+`
+
+
+```{r}
+# clustering all customers K-means (not weighted)
+
+cl_nw <- kmeans(geo_data_cleaned, 5, nstart = 1, algorithm = c("Lloyd"), trace=FALSE)
+result <- data.frame(cbind(geo_data_cleaned, clusterNum = cl_nw$cluster))
+# organise center coords to be ready for merging
+centers <- data.frame(cbind(data.frame(cl_nw$center[,1]), data.frame(cl_nw$center[,2]), clusterNum=rownames(cl_nw$center)))
+# merge cluster center coords with data        
+result2 <- merge(result, centers, all.x = TRUE) 
+# plotting clusters with 
+
+# Create a palette that maps factor levels to colors
+pal <- colorFactor(c("navy", "red", "yellow", "green", "black"), domain = c("1", "2", "3", "4", "5"))
+
+pal2 <- colorFactor(c(magma(n=5)), domain = c("1", "2", "3", "4", "5"))
+
+# plot customer locations with warehouses
+
+icons <- awesomeIcons(
+  icon = "home", 
+  library = "glyphicon",
+  markerColor = "cadetblue", 
+  iconColor = "white"
+)
+
+leaflet() %>%
+  addTiles() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(data = result, 
+                   lng=~as.numeric(geolocation_lng),
+                   lat=~as.numeric(geolocation_lat),
+                   color = ~pal2(clusterNum), 
+                   radius = 2.5) %>%
+  addAwesomeMarkers(data = centers, 
+             lng=~as.numeric(cl_nw.center...2.),
+             lat=~as.numeric(cl_nw.center...1.),
+             icon=icons)
+
+```
+
+
+
+```{r}
+# adding weigth based on revenue
+
+geo_data_cl$rev_norm <- rescale(geo_data_cl$sum_rev, to = c(0, 1))
+#geo_data_cl <- select(geo_data_cl, -sum_rev)
+
+# adding late deliveries weigth
+
+late_delvr_cl <- late_delvr %>%
+  mutate(delay = order_delivered_customer_date-order_estimated_delivery_date) %>%
+  select(customer_id, delay) %>%
+  group_by(customer_id) %>%
+  dplyr::summarise(sum_delay = sum(delay))
+
+late_ <- late_delvr %>%
+  select(customer_id, geolocation_lat, geolocation_lng)
+late_ <- late_[!duplicated(late_), ]
+
+late_merged <- merge(late_, late_delvr_cl, by.x='customer_id', by.y='customer_id')
+
+late_merged <- late_merged %>%
+  select(-customer_id)
+
+geo_data_cl_late <- merge(geo_data_cl,late_merged, by=c("geolocation_lat","geolocation_lng"), all=TRUE)
+
+
+geo_data_cl_late <- transform(geo_data_cl_late, sum_delay = as.numeric(sum_delay, units="days"))
+geo_data_cl_late$sum_delay <- rescale(geo_data_cl_late$sum_delay, to = c(0, 1))
+
+geo_data_cl_late[is.na(geo_data_cl_late)] <- 0
+
+geo_data_cl_final <- geo_data_cl_late %>%
+  mutate(weight = sum_delay+rev_norm) %>%
+  select(geolocation_lat, geolocation_lng, weight)
+geo_data_cl_final$weight <- rescale(geo_data_cl_final$weight, to = c(0, 1))
+
+geo_data_cl_final <- geo_data_cl_final[order(-geo_data_cl_final$geolocation_lng),]
+geo_data_cl_final <- geo_data_cl_final[-(1:3), , drop = FALSE]
+geo_data_cl_final
+
+```
+
+
+
+```{r}
+# clustering all customers - hardcl (weighted) kmeans
+# hardcl: on-line updates are used (AKA hard competitive learning), which work by randomly drawing an observation from x and moving the closest center towards that point
+
+
+cl_w <- cclust(x = geo_data_cl_final, k = 5, dist = "euclidean", method = "kmeans", weights = geo_data_cl_final$weight,  save.data = TRUE)
+geo_data_cl_final$clusterNum <- predict(cl_w)
+centers <- data.frame(cl_w@centers)
+
+centers$clusterNum <- seq.int(nrow(centers))
+centers<- centers %>% 
+  rename(
+    lat = geolocation_lat,
+    lng = geolocation_lng
+    ) %>%
+  select(-weight)
+geo_data_cw <- merge(geo_data_cl_final, centers, by.x='clusterNum', by.y='clusterNum')
+geo_data_cw
+
+
+# Create a palette that maps factor levels to colors
+pal2 <- colorFactor(c(magma(n=5)), domain = c("1", "2", "3", "4", "5"))
+
+# plot customer locations with warehouses
+
+icons <- awesomeIcons(
+  icon = "home", 
+  library = "glyphicon",
+  markerColor = "cadetblue", 
+  iconColor = "white"
+)
+
+leaflet() %>%
+  addTiles() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addCircleMarkers(data = geo_data_cw, 
+                   lng=~as.numeric(geolocation_lng),
+                   lat=~as.numeric(geolocation_lat),
+                   color = ~pal2(clusterNum), 
+                   radius = 2.5) %>%
+  addAwesomeMarkers(data = centers, 
+             lng=~as.numeric(lng),
+             lat=~as.numeric(lat),
+             icon=icons)
+```
+
+
+
+
+
+```{r}
+#Dashboard header carrying the title of the dashboard
+
+header <- dashboardHeader(title = "Retail Dashboard")  
+
+#Sidebar content 
+
+sidebar <- dashboardSidebar(
+  sidebarMenu(
+    menuItem("Sales Analysis", tabName = "dashboard", icon = icon("dashboard")),
+    menuItem("Geospatial Analysis", tabName = "warehouses", icon = icon("th"))
+  )
+)
+
+
+frow1 <- fluidRow(
+  valueBoxOutput("value1"),
+  valueBoxOutput("value2"),
+  valueBoxOutput("value3")
+)
+
+frow2 <- fluidRow(
+  
+  box(
+    title = "Revenue per Product Category",
+    status = "danger",
+    solidHeader = TRUE,
+    collapsible = TRUE,
+    plotOutput("revenuebyPrd", height = "400px")
+  ),
+  
+  box(
+    title = "Revenue per State",
+    status = "danger",
+    solidHeader = TRUE,
+    collapsible = TRUE,
+    plotOutput("revenuebyRegion", height = "400px")
+  ) 
+  
+)
+
+# combine the two fluid rows to make the body
+body <- dashboardBody(frow1, frow2)
+
+#completing the ui part with dashboardPage
+ui <- dashboardPage(title = 'Simple Retail Dashboard', header, sidebar, body, skin='red')
+
+# create the server functions for the dashboard  
+server <- function(input, output) { 
+  
+  #some data manipulation to derive the values of KPI boxes
+  total.revenue <- sum(order_df$price)
+  sales.month <- order_df %>% 
+    group_by(purchase_date) %>% 
+    summarise(value = sum(price)) %>% 
+    filter(value==max(value))
+  prof.prod <- order_df %>% 
+    group_by(product_category_name) %>% 
+    summarise(value = sum(price)) %>% 
+    filter(value==max(value))
+  
+  
+  #creating the valueBoxOutput content
+  output$value1 <- renderValueBox({
+    valueBox(
+      formatC(sales.month$value, format="d", big.mark=',')
+      ,paste('Top Month:',sales.month$purchase_month)
+      ,icon = icon("stats",lib='glyphicon')
+      ,color = "black")
+    
+    
+  })
+  
+  output$value2 <- renderValueBox({
+    
+    valueBox(
+      formatC(total.revenue, format="d", big.mark=',')
+      ,'Total Expected Revenue'
+      ,icon = icon("gbp",lib='glyphicon')
+      ,color = "black")
+    
+  })
+  
+  output$value3 <- renderValueBox({
+    
+    valueBox(
+      formatC(prof.prod$value, format="d", big.mark=',')
+      ,paste('Top Product Category:',prof.prod$product_category_name)
+      ,icon = icon("menu-hamburger",lib='glyphicon')
+      ,color = "black")
+    
+  })
+  
+  #creating the plotOutput content
+  
+  top_products <- order_df %>%
+    group_by(product_category_name) %>%
+    dplyr::summarise(sum_price = sum(price)) %>%
+    arrange(desc(sum_price)) %>%
+    slice(1:5) %>%
+    arrange(desc(sum_price))
+  
+  output$revenuebyPrd <- renderPlot({
+    ggplot(data = top_products,
+           aes(x=product_category_name, y=sum_price, fill = product_category_name)) + 
+      geom_bar(stat = "identity", width=1, color="white") + 
+      coord_polar("x", start=0) +
+      xlab("Product") +
+      #theme(legend.position="bottom", plot.title = element_text(size=15, face="bold")) + 
+      ggtitle("Top 5 Product Categories by Revenue") + labs(fill = "State")
+  })
+  
+  
+  output$revenuebyRegion <- renderPlot({
+    ggplot(data = order_df, 
+           aes(x=customer_state, y=price, fill=factor(customer_state))) + 
+      geom_bar(position = "dodge", stat = "identity") + ylab("Revenue") + 
+      xlab("State") + theme(legend.position="bottom", plot.title = element_text(size=15, face="bold")) + 
+      ggtitle("Revenue by Region") + labs(fill = "State")
+  })
+  
+
+}
+
+shinyApp(ui = ui, server = server)
+```
+
+
+
+```{r}
+#Dashboard header carrying the title of the dashboard
+header <- dashboardHeader(title = "Team A Analytics")  
+
+#Sidebar content of the dashboard
+sidebar <- dashboardSidebar(
+  sidebarMenu(
+    menuItem("Sales Data", tabName = "dashboard", icon = icon("dashboard")),
+    menuItem("Suggested Warehouses", tabName = "warehouses", icon = icon("th"))
+  )
+)
+
+
+frow1 <- fluidRow(
+  valueBoxOutput("value1"),
+  valueBoxOutput("value2"),
+  valueBoxOutput("value3")
+)
+
+frow2 <- fluidRow(
+  
+  box(
+    title = "Revenue per Product Category",
+    status = "danger",
+    solidHeader = TRUE,
+    collapsible = TRUE,
+    plotOutput("revenuebyPrd", height = "400px")
+  ),
+  
+  box(
+    title = "Revenue per State",
+    status = "danger",
+    solidHeader = TRUE,
+    collapsible = TRUE,
+    plotOutput("revenuebyRegion", height = "400px")
+  ) 
+  
+)
+
+
+frow3 <- fluidRow(
+  headerPanel("2017 Order Data by Months"),
+    sidebarPanel(
+      selectInput("select", "Select a month", 
+                  choices = list("Jan" ,"Feb",
+                                 "Mar","Apr",
+                                 "May", "Jun",
+                                 "Jul","Aug",
+                                 "Sep","Oct",
+                                 "Nov","Dec")
+      )), 
+    mainPanel(plotlyOutput("Orders",width="900",height = "400px")))
+  
+  
+ 
+
+# combine the two fluid rows to make the body
+body <- dashboardBody(frow1, frow2, frow3)
+
+#completing the ui part with dashboardPage
+ui <- dashboardPage(title = 'This is my Page title', header, sidebar, body, skin='red')
+
+
+
+
+
+# create the server functions for the dashboard  
+server <- function(input, output) { 
+  
+  output$Orders <- renderPlotly({
+    df <- order_df %>%
+      filter(purchase_month == input$select, purchase_year == '2017') %>%
+      group_by(purchase_day) %>%
+      dplyr::summarise(sum_price = sum(price))
+    p <- ggplot(df, aes(purchase_day, sum_price)) + 
+      geom_point(color = "red") +
+      geom_line(color = "red")
+      
+    ggplotly(p)
+  })
+  
+  
+  #some data manipulation to derive the values of KPI boxes
+  total.revenue <- sum(order_df$price)
+  sales.month <- order_df %>% 
+    group_by(purchase_month) %>% 
+    summarise(value = sum(price)) %>% 
+    filter(value==max(value))
+  prof.prod <- order_df %>% 
+    group_by(product_category_name) %>% 
+    summarise(value = sum(price)) %>% 
+    filter(value==max(value))
+  
+  
+  #creating the valueBoxOutput content
+  output$value1 <- renderValueBox({
+    valueBox(
+      formatC(sales.month$value, format="d", big.mark=',')
+      ,paste('Top Month:',sales.month$purchase_month)
+      ,icon = icon("stats",lib='glyphicon')
+      ,color = "black")
+    
+    
+  })
+  
+  
+  output$value2 <- renderValueBox({
+    
+    valueBox(
+      formatC(total.revenue, format="d", big.mark=',')
+      ,'Total Expected Revenue'
+      ,icon = icon("gbp",lib='glyphicon')
+      ,color = "black")
+    
+  })
+  
+  
+  
+  output$value3 <- renderValueBox({
+    
+    valueBox(
+      formatC(prof.prod$value, format="d", big.mark=',')
+      ,paste('Top Product Category:',prof.prod$product_category_name)
+      ,icon = icon("menu-hamburger",lib='glyphicon')
+      ,color = "black")
+    
+  })
+  
+  #creating the plotOutput content
+  
+  top_products <- order_df %>%
+    group_by(product_category_name) %>%
+    dplyr::summarise(sum_price = sum(price)) %>%
+    arrange(desc(sum_price)) %>%
+    slice(1:5) %>%
+    arrange(desc(sum_price))
+  
+  output$revenuebyPrd <- renderPlot({
+    ggplot(data = top_products,
+           aes(x=product_category_name, y=sum_price, fill = product_category_name)) + 
+      geom_bar(stat = "identity", width=1, color="white") + 
+      coord_polar("x", start=0) +
+      xlab("Product") +
+      #theme(legend.position="bottom", plot.title = element_text(size=15, face="bold")) + 
+      ggtitle("Top 5 Product Categories by Revenue") + labs(fill = "State")
+  })
+  
+  
+  output$revenuebyRegion <- renderPlot({
+    ggplot(data = order_df, 
+           aes(x=customer_state, y=price, fill=factor(customer_state))) + 
+      geom_bar(position = "dodge", stat = "identity") + ylab("Revenue") + 
+      xlab("State") + theme(legend.position="bottom", plot.title = element_text(size=15, face="bold")) + 
+      ggtitle("Revenue by Region") + labs(fill = "State")
+  })
+  
+  
+  
+}
+
+
+shinyApp(ui, server)
+```
