@@ -7,11 +7,13 @@ Data source: https://www.kaggle.com/olistbr/brazilian-ecommerce
 
 The example visualisation graphs:
 
-1. A Black Friday outlier detected:
+## 1. A Black Friday outlier detected:
+
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/01_.PNG)
 
 
-2. Financial Data Insights:
+## 2. Financial Data Insights:
+
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/02_.PNG)
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/03_.PNG)
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/03_top.PNG)
@@ -20,9 +22,11 @@ The example visualisation graphs:
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/06_.PNG)
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/07_.PNG)
 
-3. Geospatial Data Analysis:
+## 3. Geospatial Data Analysis:
+
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/08_.PNG)
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/09_.PNG)
 
-4. Example of the Dashboard Interface (to be improved):
+## 4. Example of the Dashboard Interface (to be improved):
+
 ![alt text](https://github.com/kunashko/retail_dashboard/blob/main/r_retail_dash/10_dash.PNG)
